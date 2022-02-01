@@ -1,0 +1,310 @@
+---
+title: "ft_analysis"
+author: "Kevin O'Donnell"
+date: "6/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+#changing name of imported dataset, removing old copy
+```{r}
+szn_totals <- X20_21_season_totals
+remove(X20_21_season_totals)
+```
+
+#cleaning dataset to only include columns we need
+```{r}
+
+```
+
+#defining average FT% for one proportion z-test
+```{r}
+avg_ft_pct <- mean(szn_totals$`FT%`, na.rm = T)
+tot_fta <- sum(szn_totals$FTA, na.rm = T)
+tot_ftm <- sum(szn_totals$FT, na.rm = T)
+true_avg <- tot_ftm/tot_fta
+```
+
+#creating functions for 2 prop, 1 prop
+```{r}
+#2 prop test
+prop_test <- function(x,n,p) {
+  z <- ((x/n - tot_ftm/tot_fta) / sqrt((((x+tot_ftm)/(n+tot_fta))*(1-((x+tot_ftm)/(n+tot_fta)))/(1/n+1/tot_fta))))
+  return(z)
+}
+
+#one prop test, output z (not p-value like generic function)
+one_prop_test <- function(p1, p2, n) {
+  z <- (p1-p2)/sqrt(p2*(1-p2)/n)
+  return(z)
+}
+
+#outputs whether statistic is different or same as original proportion (in our case average FT%)
+one_prop_test_result <- function(p1, p2, n) {
+  z <- (p1-p2)/sqrt(p2*(1-p2)/n)
+  ifelse(abs(z)>1.96, return("dif"), return("same"))
+}
+
+#same thing as above, but more specific
+#says whether it's above or below average
+one_prop_both_ways <- function(p1, p2, n) {
+  z <- (p1-p2)/sqrt(p2*(1-p2)/n)
+  ifelse(z>1.96, return("above average"), ifelse(between(z,-1.96,1.96), return("average"), return("below average")))
+}
+
+t_test <- function(x, u, n, s) {
+  t <- (x-u)/(s/sqrt(n))
+  ifelse(t>1.96, return("above average"), ifelse(between(t,-1.96,1.96), return("average"), return("below average")))
+}
+
+z_score <- function(x, u, s) {
+  z <- (x-u)/(s)
+  ifelse(z>1.96, return("above average"), ifelse(between(z,-1.96,1.96), return("average"), return("below average")))
+}
+```
+
+#vectorizing some of the 1 prop z-test functions so we can use them in mutate statements
+```{r}
+vectorized_one_prop_test_result <- Vectorize(one_prop_test_result)
+v_one_prop_both_ways <- Vectorize(one_prop_both_ways)
+v_t_test <- Vectorize(t_test)
+v_z_score <- Vectorize(z_score)
+
+```
+
+#putting it all together: using functions within mutate statement to create new columns to define if a player is above, at, or below average
+```{r}
+ft_dif <- szn_totals %>%
+  mutate(dif_than_avg = vectorized_one_prop_test_result(`FT%`, true_avg, FTA)) %>%
+  mutate(ft_category = v_t_test(`FT%`, true_avg, FTA, 0.1407299)) %>%
+  mutate(MPG = MP/G, FTPG = FT/G, Player = sub("\\\\.*", "", Player)) 
+
+write.csv(ft_dif,"/Users/kevinodonnell/Documents/R/NBA_Analysis/ft_unfinished.csv", row.names = FALSE)
+
+ft_sum <- ft_dif %>%
+  group_by(Player) %>%
+  filter(Tm!="TOT") %>%
+  summarise(across(where(is.numeric),sum)) %>%
+  mutate(fg_pct=FG/FGA, three_pt_pct=`3P`/`3PA`, two_pt_pct=`2P`/`2PA`, efg=(.5*three_pt_pct+FG)/FGA, ft_pct=`FT`/`FTA`, tsa=FGA+.44*FTA, ts_pct=PTS/(2*tsa), MPG=MP/G, FTPG=FTA/G) %>%
+  select(-c(`FG%`,`3P%`,`2P%`,`eFG%`,`FT%`)) %>%
+  mutate(ft_category = v_t_test(ft_pct, true_avg, FTA, 0.1407299))
+
+```
+
+# filtering for only above, below, and average (split into 3 dataframes)
+```{r}
+ft_good <- ft_sum %>%
+  filter(ft_category=="above average") %>%
+  arrange(-ft_pct)
+ft_bad <- ft_sum %>%
+  filter(ft_category=="below average") %>%
+   arrange(ft_pct)
+ft_avg <- ft_sum %>%
+  filter(ft_category=="average") %>%
+   arrange(-ft_pct)
+
+hist(ft_sum$ft_pct)
+sd(ft_sum$ft_pct, na.rm = T)
+
+ft_sum %>%
+  summarise(FTA, ft_pct, ln_ft = case_when(
+    ft_pct == 0 ~ 0,
+    is.na(ft_pct) ~ NA_real_,
+    is.numeric(ft_pct) ~ log(ft_pct))) %>%
+  mutate(ft_category = v_z_score(ln_ft, log(true_avg), 0.1407299), ft_cat2 = v_one_prop_both_ways(ft_pct, true_avg, FTA)) %>%
+  arrange(-ft_pct)
+
+```
+
+#scatterplots for above vs below avg
+```{r}
+ft_sum %>%
+  filter(ft_category!="average", FTPG>2) %>%
+  ggplot(aes(x=AST, y=TOV, color=ft_category)) +
+  geom_point() +
+  geom_abline(slope = .56)
+  #geom_smooth(method = "lm")
+
+
+  
+ft_sum %>%
+  filter(FTPG>2, G>15) %>%
+  ggplot(aes(x=FTA, y=ft_pct, color=ft_category)) +
+  geom_point() +
+  geom_label_repel(data = filter(ft_sum, FTPG>2, G>30 & (FTA>500|ft_pct>.92|ft_pct<.6)),aes(label=Player), point.padding = unit(0.5, "lines"), box.padding = unit(0.5, "lines"), size=3)
+
+ft_sum %>%
+  filter(FTPG>2, G>15) %>%
+  ggplot(aes(x=`3PA`, y=three_pt_pct, color=ft_category)) +
+  geom_point() +
+  geom_label_repel(data = filter(ft_sum, FTPG>2, G>30 & three_pt_pct>.35 & `3PA`>500), aes(label=Player), point.padding = unit(0.5, "lines"), box.padding = unit(0.5, "lines"), size=3) 
+
+#need to figure out geom_label_repel
+#change player names to before /
+#add all instances of player together, redo percentages manually 
+
+cor(ft_dif$`FT%`, ft_dif$`FG%`, use = "complete.obs")
+cor(ft_dif$`FT%`, ft_dif$`3P%`, use = "complete.obs")
+#corrplot(ft_dif, is.corr = F)
+cor_df <- cor(ft_dif[sapply(ft_dif, function(x) is.numeric(x))], use = "complete.obs")
+cor_df <- as.data.frame(cor_df)
+cor_df %>%
+  filter(if_any(everything(), ~.x>.8))
+cor_mat <- as.matrix(cor_df)
+corrplot(cor_mat, is.corr = T)
+cor(ft_dif[sapply(ft_dif, function(x) is.numeric(x))], use = "complete.obs")
+
+```
+
+# Do players with above avg FT% shoot significantly better from 3 than below average FT shooters?
+```{r}
+ft_sum %>%
+  group_by(ft_category) %>%
+  summarise(avg_three_pt_pct = mean(three_pt_pct, na.rm = T), n())
+
+good_avg <- mean(ft_good$three_pt_pct, na.rm = T)
+bad_avg <- mean(ft_bad$three_pt_pct, na.rm = T)
+avg_avg <- mean(ft_avg$three_pt_pct, na.rm = T)
+
+
+#above vs below
+t_test(good_avg, bad_avg, 185, sd(ft_bad$three_pt_pct, na.rm = T))
+
+#above vs avg
+t_test(good_avg, avg_avg, 185, sd(ft_avg$three_pt_pct, na.rm = T))
+t_test(avg_avg, good_avg, 139, sd(ft_good$three_pt_pct, na.rm = T))
+
+#below vs avg
+t_test(avg_avg, bad_avg, 139, sd(ft_bad$three_pt_pct, na.rm = T))
+
+```
+
+# position distribution of above, avg, and below
+```{r}
+#merge with new dataset which has all their positions
+positions <- read_excel("/Users/kevinodonnell/Documents/R/NBA_Analysis/20_21_season_totals\ copy.xlsx") %>%
+  unique() %>%
+  mutate(Player = sub("\\\\.*", "", Player))
+
+ft_sum_positions <- left_join(positions, ft_sum, by="Player")
+
+ft_sum_positions %>%
+  filter(Pos %in% c("C", "PF", "PG", "SF", "SG")) %>%
+  group_by(Pos, ft_category) %>%
+  mutate(cat_n = n()) %>%
+  group_by(Pos) %>%
+  mutate(n=n()) %>%
+  summarise(ft_category, ft_cat_prop = cat_n/n) %>%
+  unique() %>%
+  ggplot(aes(x=ft_category, y=ft_cat_prop)) +
+  geom_col() +
+  geom_text(aes(label=round(ft_cat_prop, 2)), vjust=-.5, color="blue") +
+  facet_wrap(~ Pos) +
+  labs(title = "Which Positions Shoot Best From the Charity Stripe?", x="Free Throw Category", y="Count") +
+  scale_x_discrete(labels=c("Above", "Avg", "Below", "NA")) +
+  scale_y_continuous(limits = c(0,.8))
+```
+
+## Part 2: League Free Throw Trends Over The NBA's History
+
+#importing season averages (most stats are per 100 possessions to adjust for changes in pace except percentages usually are per game)
+```{r}
+league_szn_avgs <- read_excel("/Users/kevinodonnell/Documents/R/NBA_Analysis/season_averages.xlsx") %>%
+  mutate(Season = as.numeric((sub("\\-.*", "", Season))))
+  
+```
+
+#plotting FT/FGA over time
+```{r}
+league_szn_avgs %>%
+  ggplot(aes(x=Season, y=`FT/FGA`)) +
+  geom_line() +
+  labs(title = "FT/FGA Over Time")
+```
+
+#FTA per 100 poss over time
+```{r}
+league_szn_avgs %>%
+  filter(!is.na(FTA)) %>%
+  ggplot(aes(x=Season, y=FTA)) +
+  geom_line() +
+  labs(title = "FTA per 100 Possessions Over Time")
+```
+
+#FT% over time
+```{r}
+league_szn_avgs %>%
+  ggplot(aes(x=Season, y=`FT%`)) +
+  geom_line() +
+  labs(title = "FT% Over Time")
+```
+
+#FT% vs ORtg
+```{r}
+league_szn_avgs %>%
+  ggplot(aes(x=ORtg, y=`FT%`)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "Relationship Between Offensive Rating and FT%")
+
+cor(league_szn_avgs$`FT%`, league_szn_avgs$ORtg, use = "complete.obs")
+```
+
+#3PA vs FTA
+```{r}
+league_szn_avgs %>%
+  ggplot(aes(x=`3PA`, y=FTA)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "Relationship Between 3PA and FTA") +
+  geom_label_repel(data=filter(league_szn_avgs, Season %in% c(2020, 2010, 2000, 1990, 1980)), aes(label=Season), point.padding = unit(1, "lines"), box.padding = unit(0.5, "lines"), size=4)
+
+cor(league_szn_avgs$`3PA`, league_szn_avgs$FTA, use = "complete.obs")
+
+cor(league_szn_avgs$`3P`, league_szn_avgs$ORtg, use = "complete.obs")
+cor(league_szn_avgs$`FT`, league_szn_avgs$ORtg, use = "complete.obs")
+
+```
+
+#Which players last season had above average FT/FGA? (expecting Harden, Young, Giannis, Luka?, Lebron?)
+```{r}
+player_averages_19 <- read_excel("/Users/kevinodonnell/Documents/R/NBA_Analysis/19_20_player_avg.xlsx")
+
+player_averages_19 <- player_averages_19 %>%
+  mutate(ft_per_fga = FT/FGA, Player = sub("\\\\.*", "", Player))
+
+player_averages_19 %>% filter(ft_per_fga > .201, G > 30, MP > 15) %>%
+  arrange(-ft_per_fga)
+
+player_averages_19 %>% filter(ft_per_fga > .201, G > 30, MP > 15) %>%
+  arrange(-FTA)
+
+player_averages_19 %>% filter(ft_per_fga > .201, G > 30, MP > 15) %>%
+  ggplot(aes(x=FTA, y=FT)) +
+  geom_point() +
+  geom_abline(slope=.778) +
+  geom_label_repel(data = filter(player_averages_19, FTA>9), aes(label=Player), point.padding = unit(0.5, "lines"), box.padding = unit(0.5, "lines"), size=3)
+
+player_averages_19 %>% filter(ft_per_fga > .201, G > 30, MP > 15) %>%
+  ggplot(aes(x=ft_per_fga, y=FTA)) +
+  geom_point() +
+  geom_label_repel(data = filter(player_averages_19, (FTA>8)|(FTA>2 & ft_per_fga>.45)), aes(label=Player), point.padding = unit(0.5, "lines"), box.padding = unit(0.5, "lines"), size=3)
+
+#this is the main one (touch up)
+#if draw foul rate is how often they get to the line AND how often they convert, do I need FT%
+#could just plot bar chart or switch foul rate to FTA/FGA to make it more intuitive
+player_averages_19 %>% filter(G > 30, MP > 15) %>%
+  ggplot(aes(x=ft_per_fga, y=`FT%`, color=FTA)) +
+  geom_point() +
+  geom_label_repel(data = filter(player_averages_19, (`FT%`>.9 & G>30 & ft_per_fga>.2)|(`FT%`>.5 & ft_per_fga>.4 & G>30)), aes(label=Player), point.padding = unit(0.5, "lines"), box.padding = unit(0.5, "lines"), size=3) +
+  geom_vline(xintercept=.201) +
+  geom_hline(yintercept = .773)
+  
+```
+
+
+
